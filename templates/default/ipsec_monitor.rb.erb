@@ -1,0 +1,126 @@
+#!/usr/bin/ruby
+require 'time'
+# This script will monitor an active/failover pair of IPSec instances and take action if either fails
+
+# IPSec instance variables
+T1_ID = "<%=@servers[0]["ec2"]["instance_id"]%>"
+T2_ID = "<%=@servers[1]["ec2"]["instance_id"]%>"
+
+# Local routing tables we're adding routes for the remote subnet
+RT_IDS = %w{ <%=@settings["route_ids"].join(" ")%> }
+# The elastic IP allocation ID for the local IPSec host
+EIP_ID = "<%=@settings["eip_id"]%>"
+
+# Elastic IP of remote IPSec server
+REMOTE_EIP = "<%=@settings["remote_eip"]%>"
+# Internal IP of remote IPSec server
+REMOTE_IP = "<%=@settings["remote_ip"]%>"
+# Remote subnet being routed
+REMOTE_SUBNETS = %w{ <%=@settings["remote_subnets"].join(" ")%> }
+
+# Health Check variables
+NUM_PINGS = <%=@settings["num_pings"]%> 
+PING_TIMEOUT = <%=@settings["ping_timeout"]%> 
+WAIT_BETWEEN_PINGS = <%=@settings["wait_between_pings"]%> 
+WAIT_FOR_INSTANCE_STOP = <%=@settings["wait_for_instance_stop"]%> 
+WAIT_FOR_INSTANCE_START = <%=@settings["wait_for_instance_start"]%>
+
+def log_msg(msg)
+  puts Time.now.utc.iso8601 + msg
+end
+
+def get_active_host()
+  route_host_id = `ec2-describe-route-tables | grep #{REMOTE_SUBNETS[0]} | awk '{ print $2 }' | head -1`.tr("\n","")
+  if ( route_host_id == T1_ID )
+    active_host_id = T1_ID
+    failover_host_id = T2_ID
+  elsif ( route_host_id == T2_ID )
+    active_host_id = T2_ID
+    failover_host_id = T1_ID
+  else
+    puts Time.now.to_s + " -- Current IPSec route destination host not in list. Exiting"
+    exit 1
+  end
+  log_msg " -- Active IPSec host is #{active_host_id}. Failover IPSec host is #{failover_host_id}"
+  return active_host_id, failover_host_id
+end
+
+def get_host_ips(a, b)
+  a_ip = `ec2-describe-instances #{a} | grep PRIVATEIPADDRESS -m 1 | awk '{print $2;}'`.tr("\n","")
+  b_ip = `ec2-describe-instances #{b} | grep PRIVATEIPADDRESS -m 1 | awk '{print $2;}'`.tr("\n","")
+
+  return a_ip, b_ip
+end
+
+log_msg " -- Starting IPSec Monitor"
+
+active_host_id, failover_host_id = get_active_host()
+active_host_ip, failover_host_ip = get_host_ips(active_host_id, failover_host_id)
+
+while (true)
+  ping_result = `ping -c #{NUM_PINGS} -W #{PING_TIMEOUT} #{REMOTE_IP} | grep -c time=`.tr("\n","")
+
+  if ( ping_result == "0" )
+
+    log_msg " -- IPSec heartbeat failed"
+
+    # Sanity check: Can we ping either instance? If not, there's likely a networking issue and we'll do nothing
+    sanity_check1 = `ping -c 3 -W 2 #{active_host_ip} | grep -c time=`.tr("\n","")
+    sanity_check2 = `ping -c 3 -W 2 #{failover_host_ip} | grep -c time=`.tr("\n","")
+    if ( sanity_check1 == "0" && sanity_check2 == "0" )
+      log_msg " -- Monitor host can't communicate with either IPSec host. Sleeping for #{WAIT_BETWEEN_PINGS} seconds..."
+      sleep WAIT_BETWEEN_PINGS
+      next
+    end
+
+    # Assume the issue is on the remote end until we determine otherwise
+    remote_port = `sudo nmap -sU -p 500 -v -PN #{REMOTE_EIP} | grep "^500/udp" | awk '{ print $2 }'`.tr("\n","")
+    if ( remote_port == "closed" )
+      log_msg " -- IPSec not listening on remote. Sleeping for #{WAIT_BETWEEN_PINGS} seconds..."
+      sleep WAIT_BETWEEN_PINGS
+      next
+    end
+
+    route_healthy = 0
+    ipsec_healthy = 0
+    stopping_server = 0
+
+    while ( ipsec_healthy == 0 )
+
+      puts "==="
+
+      if ( route_healthy == 0 )
+        log_msg " -- Setting route and EIP host to #{failover_host_id}"
+        RT_IDS.each do |rt_id|
+          REMOTE_SUBNETS.each do |subnet|
+            `ec2-replace-route #{rt_id} -r #{subnet} -i #{failover_host_id}`
+          end
+        end
+        `ec2-associate-address -a #{EIP_ID} -i #{failover_host_id} --allow-reassociation`
+        route_healthy = 1
+      end
+
+      server_state = `ec2-describe-instances #{active_host_id} | grep INSTANCE | awk '{print $5;}'`.tr("\n","")
+
+      if ( server_state == "stopped" )
+        log_msg " -- Failed IPSec instance stopped, starting it back up"
+        `ec2-start-instances #{active_host_id}`
+        ipsec_healthy = 1
+        sleep WAIT_FOR_INSTANCE_START
+
+        get_active_host()
+      else
+        if ( stopping_server == 0 )
+          log_msg " -- Failed IPSec instance #{server_state}, attempting to stop for reboot"
+          `ec2-stop-instances #{active_host_id}`
+          stopping_server = 1
+        end
+        sleep WAIT_FOR_INSTANCE_STOP
+      end
+
+    end # while ipsec_healthy == 0
+  else
+    sleep WAIT_BETWEEN_PINGS
+  end # if ping_result == 0
+
+end # while true

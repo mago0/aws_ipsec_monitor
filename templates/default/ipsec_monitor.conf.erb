@@ -1,0 +1,22 @@
+# /etc/init/ipsec_monitor.conf
+
+description "IPSec server monitor"
+author      "Matt Williams"
+
+start on (local-filesystems and net-device-up IFACE=eth0)
+
+stop on shutdown
+
+# Automatically Respawn:
+respawn
+respawn limit 99 5
+
+script
+  export JAVA_HOME="/usr/lib/jvm/java-7-openjdk-amd64/jre"
+  export EC2_HOME="<%=@ec2_home%>"
+  export PATH=$PATH:$EC2_HOME/bin
+
+  export EC2_URL=https://ec2.<%=@region%>.amazonaws.com
+
+  exec /usr/bin/ruby <%=@settings["dir"]%>/ipsec_monitor.rb >> /var/log/ipsec_monitor.log 2>&1
+end script
