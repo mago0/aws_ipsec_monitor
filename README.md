@@ -10,6 +10,9 @@ Requirements
 - EIP for pair of IPSec instances
 - Two IPSec instances, built via Chef with some defined IPSec Chef role assigned
   to each
+- Monitor server will require IAM role with permissions necessary to stop/start
+  instances, modify routing tables, and move an EIP
+- Must define a region attribute via recipe or on the node itself.
 
 Attributes
 ----------
