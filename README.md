@@ -61,6 +61,8 @@ Usage
 #### aws_ipsec_monitor::default
 Create a role with the following attributes. Do yourself a favor and have IPSec, Elastic IPs, routing tables all set up before defining the role.
 
+Requires exactly two nodes to be tagged with the value of node["aws_ipsec_monitor"]["ipsec_tag"] attribute
+
 ```ruby
 name "ipsec_monitor"
 description "The IPSec tunnel monitor for our VPC"
