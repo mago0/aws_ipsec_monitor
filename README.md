@@ -14,6 +14,15 @@ Requirements
   instances, modify routing tables, and move an EIP
 - Must define a region attribute via recipe or on the node itself.
 
+- IPSec hosts REQUIRE an iptables rule to masquerade ike (UDP 500) requests from
+  the monitor server:
+```
+iptables -t nat -A PREROUTING -s <monitor_host_or_subnet> -p udp -m udp --dport 500 -j DNAT
+--to-destination <remote_ipsec_eip>:500
+iptables -t nat -A POSTROUTING -s <monitor_host_or_subnet> -d <remote_ipsec_eip> -p udp -m udp
+--dport 500 -j MASQUERADE
+```
+
 Attributes
 ----------
 ```ruby
