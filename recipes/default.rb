@@ -4,6 +4,7 @@
 #
 
 package "openjdk-7-jre"
+package "ike-scan"
 
 settings = node["aws_ipsec_monitor"]
 

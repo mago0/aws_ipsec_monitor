@@ -73,13 +73,24 @@ while (true)
       next
     end
 
-    # Assume the issue is on the remote end until we determine otherwise
-    remote_port = `sudo nmap -sU -p 500 -v -PN #{REMOTE_EIP} | grep "^500/udp" | awk '{ print $2 }'`.tr("\n","")
-    if ( remote_port == "closed" )
-      log_msg " -- IPSec not listening on remote. Sleeping for #{WAIT_BETWEEN_PINGS} seconds..."
-      sleep WAIT_BETWEEN_PINGS
-      next
-    end
+    # If we can ping the active host, assume the issue is on the remote end until we determine otherwise
+    if ( sanity_check1 != "0" )
+      remote_port = `ike-scan #{active_host_ip} | grep "returned handshake" | awk '{ print $12 }'`.tr("\n","")
+      if ( remote_port == "0" )
+        log_msg " -- IPSec not listening on remote. Sleeping for #{WAIT_BETWEEN_PINGS} seconds..."
+        sleep WAIT_BETWEEN_PINGS
+        next
+      else
+        log_msg " -- IPSec listening on remote. Doing another health-check to test for recovery."
+        sleep WAIT_BETWEEN_PINGS
+        # One more ping check in case the remote end has recovered
+        ping_result = `ping -c #{NUM_PINGS} -W #{PING_TIMEOUT} #{REMOTE_IP} | grep -c time=`.tr("\n","")
+        if ( ping_result != "0" )
+          log_msg " -- IPSec recovered"
+          next
+        end
+      end #remote_port == "0"
+    end #sanity_check1 != "0"
 
     route_healthy = 0
     ipsec_healthy = 0
