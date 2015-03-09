@@ -38,7 +38,7 @@ def get_active_host()
     active_host_id = T2_ID
     failover_host_id = T1_ID
   else
-    puts Time.now.to_s + " -- Current IPSec route destination host not in list. Exiting"
+    log_msg " -- Current IPSec route destination host not in list. Exiting"
     exit 1
   end
   log_msg " -- Active IPSec host is #{active_host_id}. Failover IPSec host is #{failover_host_id}"
@@ -52,10 +52,29 @@ def get_host_ips(a, b)
   return a_ip, b_ip
 end
 
+def failover(failover_host_id)
+  log_msg " -- Setting route and EIP host to #{failover_host_id}"
+  RT_IDS.each do |rt_id|
+    REMOTE_SUBNETS.each do |subnet|
+      `ec2-replace-route #{rt_id} -r #{subnet} -i #{failover_host_id}`
+    end
+  end
+  `ec2-associate-address -a #{EIP_ID} -i #{failover_host_id} --allow-reassociation`
+end
+
 log_msg " -- Starting IPSec Monitor"
 
 active_host_id, failover_host_id = get_active_host()
 active_host_ip, failover_host_ip = get_host_ips(active_host_id, failover_host_id)
+
+# Allow for admin initiated failover (kill -USR1 PID)
+Signal.trap("USR1") {
+  log_msg " -- Admin initiated failover."
+  failover(failover_host_id)
+  active_host_id, failover_host_id = get_active_host()
+  active_host_ip, failover_host_ip = get_host_ips(active_host_id, failover_host_id)
+  sleep WAIT_BETWEEN_PINGS
+}
 
 while (true)
   ping_result = `ping -c #{NUM_PINGS} -W #{PING_TIMEOUT} #{REMOTE_IP} | grep -c time=`.tr("\n","")
@@ -98,16 +117,8 @@ while (true)
 
     while ( ipsec_healthy == 0 )
 
-      puts "==="
-
       if ( route_healthy == 0 )
-        log_msg " -- Setting route and EIP host to #{failover_host_id}"
-        RT_IDS.each do |rt_id|
-          REMOTE_SUBNETS.each do |subnet|
-            `ec2-replace-route #{rt_id} -r #{subnet} -i #{failover_host_id}`
-          end
-        end
-        `ec2-associate-address -a #{EIP_ID} -i #{failover_host_id} --allow-reassociation`
+        failover(failover_host_id)
         route_healthy = 1
       end
 
@@ -119,7 +130,8 @@ while (true)
         ipsec_healthy = 1
         sleep WAIT_FOR_INSTANCE_START
 
-        get_active_host()
+        active_host_id, failover_host_id = get_active_host()
+        active_host_ip, failover_host_ip = get_host_ips(active_host_id, failover_host_id)
       else
         if ( stopping_server == 0 )
           log_msg " -- Failed IPSec instance #{server_state}, attempting to stop for reboot"
